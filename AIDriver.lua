@@ -617,7 +617,7 @@ function AIDriver:isStopped()
 end
 
 function AIDriver:drawTemporaryCourse()
-	if not self.nextCourse then return end
+	if not self.course:isTemporary() then return end
 	if not courseplay.debugChannels[self.debugChannel] then return end
 	for i = 1, self.course:getNumberOfWaypoints() - 1 do
 		local x, y, z = self.course:getWaypointPosition(i)
@@ -1104,28 +1104,31 @@ end
 --- of the path and the target course
 ---@return boolean true if a temporary course (path/align) is started, false otherwise
 function AIDriver:onPathfindingDone(path)
-	if path and #path > 5 then
+	if path and #path > 2 then
 		self:debug('Pathfinding finished with %d waypoints (%d ms)', #path, self.vehicle.timer - (self.pathFindingStartedAt or 0))
 		local temporaryCourse = Course(self.vehicle, courseGenerator.pointsToXz(path), true)
-		-- first remove a few waypoints from the path so we have room for the alignment course
-		if temporaryCourse:getLength() > self.vehicle.cp.turnDiameter * 3 and temporaryCourse:shorten(self.vehicle.cp.turnDiameter * 1.5) then
-			self:debug('Path shortened to accommodate alignment, has now %d waypoints', temporaryCourse:getNumberOfWaypoints())
-			-- append an alignment course at the end of the path to the target waypoint
-			local x, _, z = temporaryCourse:getWaypointPosition(temporaryCourse:getNumberOfWaypoints())
-			local tx, _, tz = self.courseAfterPathfinding:getWaypointPosition(self.waypointIxAfterPathfinding)
-			local alignmentWaypoints = courseplay:getAlignWpsToTargetWaypoint(self.vehicle, x, z, tx, tz,
-				math.rad(self.courseAfterPathfinding:getWaypointAngleDeg(self.waypointIxAfterPathfinding)), true)
-			if alignmentWaypoints then
-				self:debug('Append an alignment course with %d waypoints to the path', #alignmentWaypoints)
-				temporaryCourse:append(alignmentWaypoints)
+		-- alignment (and thus shortening) only needed if we have a course to continue on after the pathfinding
+		if self.courseAfterPathfinding then
+			if temporaryCourse:getLength() > self.vehicle.cp.turnDiameter * 3 and temporaryCourse:shorten(self.vehicle.cp.turnDiameter * 1.5) then
+				-- first remove a few waypoints from the path so we have room for the alignment course
+				self:debug('Path shortened to accommodate alignment, has now %d waypoints', temporaryCourse:getNumberOfWaypoints())
+				-- append an alignment course at the end of the path to the target waypoint
+				local x, _, z = temporaryCourse:getWaypointPosition(temporaryCourse:getNumberOfWaypoints())
+				local tx, _, tz = self.courseAfterPathfinding:getWaypointPosition(self.waypointIxAfterPathfinding)
+				local alignmentWaypoints = courseplay:getAlignWpsToTargetWaypoint(self.vehicle, x, z, tx, tz,
+					math.rad(self.courseAfterPathfinding:getWaypointAngleDeg(self.waypointIxAfterPathfinding)), true)
+				if alignmentWaypoints then
+					self:debug('Append an alignment course with %d waypoints to the path', #alignmentWaypoints)
+					temporaryCourse:append(alignmentWaypoints)
+				else
+					self:debug('Could not append an alignment course to the path')
+				end
 			else
-				self:debug('Could not append an alignment course to the path')
+				return self:onNoPathFound('Path too short, reverting to alignment course.')
 			end
-			self:startCourse(temporaryCourse, 1, self.courseAfterPathfinding, self.waypointIxAfterPathfinding)
-			return true
-		else
-			return self:onNoPathFound('Path too short, reverting to alignment course.')
 		end
+		self:startCourse(temporaryCourse, 1, self.courseAfterPathfinding, self.waypointIxAfterPathfinding)
+		return true
 	else
 		if path then
 			return self:onNoPathFound('Path found but too short (%d), reverting to alignment course.', #path)

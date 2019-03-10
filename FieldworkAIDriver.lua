@@ -29,6 +29,7 @@ FieldworkAIDriver = CpObject(AIDriver)
 FieldworkAIDriver.myStates = {
 	ON_FIELDWORK_COURSE = {},
 	ON_UNLOAD_OR_REFILL_COURSE = {},
+	RETURNING_TO_FIRST_POINT = {},
 	UNLOAD_OR_REFILL_ON_FIELD = {},
 	WAITING_FOR_UNLOAD_OR_REFILL ={}, -- while on the field
 	ON_CONNECTING_TRACK = {},
@@ -158,7 +159,7 @@ function FieldworkAIDriver:start(ix)
 		self:startCourseWithAlignment(self.unloadRefillCourse, ix - self.fieldworkCourse:getNumberOfWaypoints())
 	else
 		-- we are on the fieldwork part
-		self:startFieldworkWithAlignment(ix)
+		self:startFieldworkWithPathfinding(ix)
 	end
 end
 
@@ -196,6 +197,8 @@ function FieldworkAIDriver:drive(dt)
 			-- someone else is driving, no need to call AIDriver.drive()
 			return
 		end
+	elseif self.state == self.states.RETURNING_TO_FIRST_POINT then
+		self:setSpeed(self:getFieldSpeed())
 	end
 	self:setRidgeMarkers()
 	self:resetUnloadOrRefillHold()
@@ -344,9 +347,18 @@ function FieldworkAIDriver:onEndCourse()
 		-- unload/refill course ended, return to fieldwork
 		self:debug('AI driver in mode %d continue fieldwork at %d/%d waypoints', self:getMode(), self.continueFieldworkAtWaypoint, self.fieldworkCourse:getNumberOfWaypoints())
 		self:startFieldworkWithPathfinding(self.vehicle.cp.continueFieldworkAtWaypoint or self.continueFieldworkAtWaypoint)
+	elseif self.state == self.states.RETURNING_TO_FIRST_POINT then
+		AIDriver.onEndCourse(self)
 	else
 		self:debug('Fieldwork AI driver in mode %d ending course', self:getMode())
-		AIDriver.onEndCourse(self)
+		local x, _, z = self.fieldworkCourse:getWaypointPosition(1)
+		if self:driveToPointWithPathfinding(x, z, true) then
+			-- pathfinding was successful, drive back to first point
+			self.state = self.states.RETURNING_TO_FIRST_POINT
+		else
+			-- no path or too short, stop here.
+			AIDriver.onEndCourse(self)
+		end
 	end
 end
 
