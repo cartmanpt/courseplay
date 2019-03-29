@@ -23,6 +23,7 @@ function CpManager:setUpDebugChannels()
 			defaultActive[6] = true;
 			defaultActive[7] = true;
 			defaultActive[9] = true;
+			defaultActive[22] = true;
 		end;
 	end;
 
@@ -62,7 +63,7 @@ function CpManager:setUpDebugChannels()
 		[19] = 'Debug: special triggers';
 		[20] = 'Debug: WeightStation';
 		[21] = 'Debug: Speed setting';
-		[22] = 'Debug: temp MP';
+		[22] = 'Debug: Turn';
 		[23] = 'Debug: mode8: liquid product transport';
 		[24] = 'Debug: activate cyclic prints'; --this is to prevent spamming the log if not nessesary (e.g. raycasts)
 	};

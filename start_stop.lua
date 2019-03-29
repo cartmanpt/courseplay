@@ -925,7 +925,7 @@ function courseplay:checkSaveFuel(vehicle,allowedToDrive)
 end
 
 function courseplay:safeSetWaypointIndex( vehicle, newIx )
-	for i = newIx, newIx + 3 do
+	for i = newIx, newIx + 1 do
 		-- don't set it too close to a turn start, 
 		if vehicle.Waypoints[ i ] ~= nil and vehicle.Waypoints[ i ].turnStart then
 			-- set it to after the turn

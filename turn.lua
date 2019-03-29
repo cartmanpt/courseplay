@@ -9,7 +9,7 @@ local wpCircleDistance	= 1; 	-- Waypoint Distance in circles
 -- after the turn we'll be heading into the opposite direction. 
 local laneTurnAngleThreshold = 150
 
-function courseplay:turn(vehicle, dt)
+function courseplay:turn(vehicle, dt, useBackMarkerOffset)
 	---- TURN STAGES:
 	-- 0:	Raise implements
 	-- 1:	Create Turn maneuver (Creating waypoints to follow)
@@ -271,11 +271,14 @@ function courseplay:turn(vehicle, dt)
 			end
 
 			--- Find the zOffset based on tractors current position from the start turn wp
+			-- zOffset is actually the distance from the turn start waypoint to the tractor in the moment when the back marker reaches the turn start waypoint,
+			-- in other words, it is the same as the backmarker
 			_, _, turnInfo.zOffset = worldToLocal(turnInfo.directionNode, vehicle.Waypoints[vehicle.cp.waypointIndex].cx, vehicleY, vehicle.Waypoints[vehicle.cp.waypointIndex].cz);
 			-- remember this as we'll need it later
 			turnInfo.deltaZBetweenVehicleAndTarget = turnInfo.targetDeltaZ
 			-- targetDeltaZ is now the delta Z between the turn start and turn end waypoints.
 			turnInfo.targetDeltaZ = turnInfo.targetDeltaZ - turnInfo.zOffset;
+			turnInfo.zOffset = useBackMarkerOffset and turnInfo.backMarker or turnInfo.zOffset
 
 			--- Get headland height
 			-- if vehicle.cp.courseWorkWidth and vehicle.cp.courseWorkWidth > 0 and vehicle.cp.courseNumHeadlandLanes and vehicle.cp.courseNumHeadlandLanes > 0 then
@@ -406,7 +409,7 @@ function courseplay:turn(vehicle, dt)
 
 			unlink(turnInfo.targetNode);
 			delete(turnInfo.targetNode);
-
+			return turnInfo
 			----------------------------------------------------------
 			-- TURN STAGES 2 - Drive Turn maneuver
 			----------------------------------------------------------
