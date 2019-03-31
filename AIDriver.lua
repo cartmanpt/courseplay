@@ -119,11 +119,6 @@ AIDriver.myStates = {
 	STOPPED = {},
 }
 
-AIDriver.turnStages = {
-	APPROACH = {},
-	TURNING = {}
-}
-
 --- Create a new driver (usage: aiDriver = AIDriver(vehicle)
 -- @param vehicle to drive. Will set up a course to drive from vehicle.Waypoints
 function AIDriver:init(vehicle)
@@ -187,6 +182,8 @@ end
 -- make sure this is called from the derived start() to initialize all common stuff
 function AIDriver:beforeStart()
 	self.turnIsDriving = false
+	self.isTurning = false
+	self.nextCourse = nil
 	self:deleteCollisionDetector()
 	self:startEngineIfNeeded()
 end
@@ -449,7 +446,6 @@ function AIDriver:getReverseDrivingDirection()
 
 	local moveForwards = true
 	local isReverseActive = false
-	-- TODO: refactor this! No dependencies on modes here!
 	-- get the direction to drive to
 	local lx, lz = self:getDirectionToGoalPoint()
 	-- take care of reversing
@@ -493,7 +489,10 @@ function AIDriver:onWaypointPassed(ix)
 end
 
 function AIDriver:onLastWaypoint()
-	self.isTurning = false
+	if self.isTurning and self:canDriveTurns() then
+		-- TODO: maybe creating a callback for the course end, just like nextCourse nad nextWpIx would be nicer?
+		self:onTurnEnd()
+	end
 	if self.nextCourse then
 		self:continueOnNextCourse(self.nextCourse, self.nextWpIx)
 	else
@@ -558,55 +557,12 @@ function AIDriver:getRecordedSpeed()
 	return speed
 end
 
--- TODO: review this whole fillpoint/filltrigger thing.
-function AIDriver:isNearFillPoint()
-	return self.course:havePhysicallyPassedWaypoint(self.vehicle.cp.DirectionNode,#self.course.waypoints) and self.ppc:getCurrentWaypointIx() <= 3;
-end
-
-function AIDriver:getIsInFilltrigger()
-	return self.vehicle.cp.fillTrigger ~= nil or self:isNearFillPoint()
-end
 --- Is an alignment course needed to reach waypoint ix in the current course?
 -- override in derived classes as needed
 ---@param course Course
 function AIDriver:isAlignmentCourseNeeded(course, ix)
 	local d = course:getDistanceBetweenVehicleAndWaypoint(self.vehicle, ix)
 	return d > self.vehicle.cp.turnDiameter and self.vehicle.cp.alignment.enabled
-end
-
-function AIDriver:onTurnStart(ix)
-	-- make sure turn has the current waypoint set to the the turn start wp
-	-- TODO: refactor turn.lua so it does not assume the waypoint ix won't change
-	courseplay:setWaypointIndex(self.vehicle, ix)
-	self:debug('Starting a turn at waypoint %d.', ix)
-	if self:canDriveTurns() then
-		self.isTurning = true
-		-- for backwards compatibility, we use the old turn function but only to calculate the turn
-		-- turnStage will make turn.lua to calculate the waypoints
-		self.vehicle.cp.turnStage = 1
-		-- true for using the back marker offset, as turn.lua assumes that it is called when the back marker
-		-- reaches the turn start waypoint but here we call it well before that
-		courseplay:turn(self.vehicle, 0, true)
-		local turnCourse = Course(self.vehicle, self.vehicle.cp.turnTargets, true)
-		courseplay:clearTurnTargets(self.vehicle)
-		turnCourse:print()
-		turnCourse:fixCourseGeneratedByTurnLua()
-		turnCourse:print()
-		self:startCourse(turnCourse, 1, self.course, ix + 1)
-	else
-		self.turnIsDriving = true
-	end
-end
-
-function AIDriver:onTurnEnd()
-	if self:canDriveTurns() then
-		self.isTurning = false
-	else
-		self.turnIsDriving = false
-		-- for now, we rely on turn.lua to set the next waypoint at the end of the turn and
-		self.ppc:initialize()
-	end
-	self:debug('Turn ended, continue at waypoint %d.', self.ppc:getCurrentWaypointIx())
 end
 
 ---@param course Course
@@ -626,32 +582,108 @@ function AIDriver:setUpAlignmentCourse(course, ix)
 	return Course(self.vehicle, alignmentWaypoints, true)
 end
 
-function AIDriver:debug(...)
-	courseplay.debugVehicle(self.debugChannel, self.vehicle, ...)
-end
+-- ############### Turns #############################
 
---- output debug message only at every debugTicks loop
-function AIDriver:debugSparse(...)
-	if g_updateLoopIndex % self.debugTicks == 0 then
-		courseplay.debugVehicle(self.debugChannel, self.vehicle, ...)
+AIDriver.turnStages = {
+	APPROACH = {},
+	TURNING = {}
+}
+
+function AIDriver:onTurnStart(ix)
+	-- make sure turn has the current waypoint set to the the turn start wp
+	-- TODO: refactor turn.lua so it does not assume the waypoint ix won't change
+	courseplay:setWaypointIndex(self.vehicle, ix)
+	self:debug('Starting a turn at waypoint %d.', ix)
+	if self:canDriveTurns() then
+		self.isTurning = true
+		self.turnStage = self.turnStages.APPROACH
+
+		for _,workTool in pairs(self.vehicle.cp.workTools) do
+			courseplay:setMarkers(self.vehicle, workTool);
+		end;
+
+		self:startCourse(self:createTurnApproachCourse(ix), 1, self.course, ix)
+		self:debug('Approaching turn...')
+		self.course:print()
+	else
+		self.turnIsDriving = true
 	end
 end
 
+function AIDriver:onTurnEnd()
+	if self:canDriveTurns() then
+		self.isTurning = false
+	else
+		self.turnIsDriving = false
+		-- for now, we rely on turn.lua to set the next waypoint at the end of the turn and
+		self.ppc:initialize()
+		self:debug('Turn ended, continue at waypoint %d.', self.ppc:getCurrentWaypointIx())
+	end
+end
+
+--- Temporary function for the period while the driving in turns is migrated to AIDriver.
+--- Makes sure that when debug channel 22 is OFF, turn.lua is driving the turn maneuvers as before
+--- If channel 22 is on, turn.lua only generates the course but the actual driving is done by the AIDriver
+function AIDriver:canDriveTurns()
+	return courseplay.debugChannels[22]
+end
+
+--- Drive the turn. Override in derived classes for
+function AIDriver:driveTurn()
+	self:setSpeed(self.vehicle.cp.speeds.turn)
+	if self.turnStage == self.turnStages.APPROACH then
+		-- approaching turn start waypoint
+		local _, dz = self.course:getWaypointLocalPosition(self.vehicle.rootNode, 1)
+		local x, _, z = getWorldTranslation(self.vehicle.rootNode)
+		self:debug('%1.f %.1f - %.1f %s %.1f', x, z, dz, tostring(self.vehicle.cp.backMarkerOffset), self.course.offsetZ)
+		if dz < (self.vehicle.cp.backMarkerOffset or 0) then
+			-- for backwards compatibility, we use the old turn function but only to calculate the turn
+			-- turnStage will make turn.lua to calculate the waypoints
+			self.vehicle.cp.turnStage = 1
+			-- TODO: the start waypoint should be a parameter of turn() and not the vehicle.Waypoints global variable...
+			-- (which also needs a conversion back to the original CP waypoints (when we have combined courses)
+			courseplay:setWaypointIndex(self.vehicle, self.nextCourse:getOriginalWaypointIx(self.nextWpIx));
+			-- true for using the back marker offset, as turn.lua assumes that it is called when the back marker
+			-- reaches the turn start waypoint but here we call it well before that
+			courseplay:turn(self.vehicle, 0)
+			local turnCourse = Course(self.vehicle, self.vehicle.cp.turnTargets, true)
+			courseplay:clearTurnTargets(self.vehicle)
+			--turnCourse:print()
+			turnCourse:fixCourseGeneratedByTurnLua()
+			--turnCourse:print()
+			self:startCourse(turnCourse, 1, self.nextCourse, self.nextWpIx + 1)
+			self.turnStage = self.turnStages.TURNING
+			self:onTurnApproachEnd()
+		end
+	end
+end
+
+function AIDriver:onTurnApproachEnd()
+	-- implement as needed in the derived classes
+end
+
+function AIDriver:createTurnApproachCourse(ix)
+	local tmpNode = WaypointNode('tmpNode')
+	local wps = {}
+	-- make sure the first waypoint is on the turn start waypoint (we don't want to use the turn start wp itself
+	-- as it is pointing to the turn end, that is, about 90 degrees to the left or right, but we want to continue straight ahead
+	local dToNext = self.course:getDistanceToNextWaypoint(ix - 1)
+	for i = 0, 3 do
+		tmpNode:setRelativeToWaypoint(self.course, ix - 1, dToNext + i * 5)
+		local x, _, z = tmpNode:getPosition()
+		table.insert(wps, {x = x, z = z})
+	end
+	tmpNode:destroy()
+	return Course(self.vehicle, wps, true)
+end
+
+
 function AIDriver:isStopped()
-	-- giants supplied last speed is in mm/s
+	-- Giants provides last speed is in mm/s
 	return math.abs(self.vehicle.lastSpeedReal) < 0.0001
 end
 
-function AIDriver:drawTemporaryCourse()
-	if not self.nextCourse then return end
-	if not courseplay.debugChannels[self.debugChannel] then return end
-	for i = 1, self.course:getNumberOfWaypoints() - 1 do
-		local x, y, z = self.course:getWaypointPosition(i)
-		local nx, ny, nz = self.course:getWaypointPosition(i + 1)
-		cpDebug:drawPoint(x, y + 3, z, 10, 0, 0)
-		cpDebug:drawLine(x, y + 3, z, 0, 0, 100, nx, ny + 3, nz)
-	end
-end
+-- ############### Traffic Collision #############################
 
 function AIDriver:enableCollisionDetection()
 	courseplay.debugVehicle(3,self.vehicle,'Collision detection enabled')
@@ -705,6 +737,8 @@ function AIDriver:detectCollision(dt)
 
 end
 
+-- ############### Lights #############################
+
 function AIDriver:areBeaconLightsEnabled()
 	return self.vehicle.cp.warningLightsMode > courseplay.lights.WARNING_LIGHTS_NEVER
 end
@@ -735,6 +769,16 @@ function AIDriver:onLeaveVehicle(superFunc)
 	end
 end
 Lights.onLeaveVehicle = Utils.overwrittenFunction(Lights.onLeaveVehicle , AIDriver.onLeaveVehicle)
+
+
+-- TODO: review this whole fillpoint/filltrigger thing.
+function AIDriver:isNearFillPoint()
+	return self.course:havePhysicallyPassedWaypoint(self.vehicle.cp.DirectionNode,#self.course.waypoints) and self.ppc:getCurrentWaypointIx() <= 3;
+end
+
+function AIDriver:getIsInFilltrigger()
+	return self.vehicle.cp.fillTrigger ~= nil or self:isNearFillPoint()
+end
 
 function AIDriver:dischargeAtUnloadPoint(dt,unloadPointIx)
 	local tipRefpoint = 0
@@ -1059,7 +1103,7 @@ function AIDriver:updateOffset()
 end
 
 ------------------------------------------------------------------------------
---- PATHFINDING
+--- ####################  PATHFINDING ############################
 ------------------------------------------------------------------------------
 
 --- Start course (with pathfinding if needed) and set course as the current one
@@ -1203,21 +1247,31 @@ function AIDriver:stopEngineIfNotNeeded()
 	end
 end
 
+-- ######################### Debug ############################
+
 --- called from courseplay:onDraw, a placeholder for showing debug infos, which can this way be added and reloaded
 --- without restarting the game.
 function AIDriver:onDraw()
 end
 
-function AIDriver:canDriveTurns()
-	return courseplay.debugChannels[22]
+function AIDriver:debug(...)
+	courseplay.debugVehicle(self.debugChannel, self.vehicle, ...)
 end
 
-function AIDriver:driveTurn()
-	self:setSpeed(self.vehicle.cp.speeds.turn)
-	if self.turnStage == self.turnStages.APPROACH then
-		-- approaching turn start waypoint
-		local _, dz = self.course:getWaypointLocalPosition(self.vehicle.rootNode, self.turnStartWpIx)
-		if dz < (self.vehicle.cp.backMarkerOffset or 0) then
-		end
+--- output debug message only at every debugTicks loop
+function AIDriver:debugSparse(...)
+	if g_updateLoopIndex % self.debugTicks == 0 then
+		courseplay.debugVehicle(self.debugChannel, self.vehicle, ...)
+	end
+end
+
+function AIDriver:drawTemporaryCourse()
+	if not self.nextCourse then return end
+	if not courseplay.debugChannels[self.debugChannel] then return end
+	for i = 1, self.course:getNumberOfWaypoints() - 1 do
+		local x, y, z = self.course:getWaypointPosition(i)
+		local nx, ny, nz = self.course:getWaypointPosition(i + 1)
+		cpDebug:drawPoint(x, y + 3, z, 10, 0, 0)
+		cpDebug:drawLine(x, y + 3, z, 0, 0, 100, nx, ny + 3, nz)
 	end
 end

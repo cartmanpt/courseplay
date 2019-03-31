@@ -3,13 +3,13 @@ local _; --- The _ is an discart character for values not needed. Setting it to 
 
 --- SET VALUES
 local wpDistance		= 1.5;  -- Waypoint Distance in Strait lines
-local wpCircleDistance	= 1; 	-- Waypoint Distance in circles
+local wpCircleDistance	= 1; 	-- Waypoint Distance in circle
 -- if the direction difference between turnStart and turnEnd is bigger than this then
 -- we consider that as a turn when switching to the next up/down lane and assume that
 -- after the turn we'll be heading into the opposite direction. 
 local laneTurnAngleThreshold = 150
 
-function courseplay:turn(vehicle, dt, useBackMarkerOffset)
+function courseplay:turn(vehicle, dt, aiTurn, turnStartX, turnStartZ)
 	---- TURN STAGES:
 	-- 0:	Raise implements
 	-- 1:	Create Turn maneuver (Creating waypoints to follow)
@@ -275,10 +275,11 @@ function courseplay:turn(vehicle, dt, useBackMarkerOffset)
 			-- in other words, it is the same as the backmarker
 			_, _, turnInfo.zOffset = worldToLocal(turnInfo.directionNode, vehicle.Waypoints[vehicle.cp.waypointIndex].cx, vehicleY, vehicle.Waypoints[vehicle.cp.waypointIndex].cz);
 			-- remember this as we'll need it later
-			turnInfo.deltaZBetweenVehicleAndTarget = turnInfo.targetDeltaZ
 			-- targetDeltaZ is now the delta Z between the turn start and turn end waypoints.
 			turnInfo.targetDeltaZ = turnInfo.targetDeltaZ - turnInfo.zOffset;
-			turnInfo.zOffset = useBackMarkerOffset and turnInfo.backMarker or turnInfo.zOffset
+			turnInfo.deltaZBetweenVehicleAndTarget = aiTurn and turnInfo.backMarker + turnInfo.targetDeltaZ or turnInfo.targetDeltaZ
+			print('*****' .. tostring(turnInfo.deltaZBetweenVehicleAndTarget))
+			turnInfo.zOffset = aiTurn and turnInfo.backMarker or turnInfo.zOffset
 
 			--- Get headland height
 			-- if vehicle.cp.courseWorkWidth and vehicle.cp.courseWorkWidth > 0 and vehicle.cp.courseNumHeadlandLanes and vehicle.cp.courseNumHeadlandLanes > 0 then
@@ -289,9 +290,6 @@ function courseplay:turn(vehicle, dt, useBackMarkerOffset)
 			-- 		turnInfo.headlandHeight = turnInfo.headlandHeight + ((vehicle.cp.courseNumHeadlandLanes - 1) * vehicle.cp.courseWorkWidth);
 			-- 	end;
 			-- end; 
-
-
-
 
 			--- Calculate reverseOffset in case we need to reverse
 			local offset = turnInfo.zOffset;
@@ -313,6 +311,13 @@ function courseplay:turn(vehicle, dt, useBackMarkerOffset)
 
 
 			if not turnInfo.isHeadlandCorner then
+
+				if aiTurn then
+					courseplay.debugVehicle(14, vehicle, '(Turn) called by AIDriver, adding a straight section from the vehicle to the turn start')
+					local x, _, z = getWorldTranslation(vehicle.rootNode)
+					courseplay:generateTurnStraightPoints(vehicle, {x = x, z = z}, {x = turnStartX, z = turnStartZ})
+				end
+
 				----------------------------------------------------------
 				-- SWITCH TO THE NEXT LANE
 				----------------------------------------------------------

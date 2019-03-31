@@ -21,8 +21,9 @@ function courseplay:goReverse(vehicle,lx,lz,mode2)
 					workTool = attacherVehicle;
 				end;
 			end;
-		end;
+		end
 	end;
+	--print(string.format('%d %s %s %s', vehicle.cp.numWorkTools, tostring(workTool), tostring(workTool.cp.isPivot), tostring(workTool.cp.frontNode)))
 	local debugActive = courseplay.debugChannels[13];
 	local isNotValid = vehicle.cp.numWorkTools == 0 or workTool == nil or workTool.cp.isPivot == nil or not workTool.cp.frontNode or vehicle.cp.mode == 9;
 	if isNotValid then

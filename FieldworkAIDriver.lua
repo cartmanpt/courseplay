@@ -343,9 +343,10 @@ function FieldworkAIDriver:onWaypointPassed(ix)
 	self:debug('onWaypointPassed %d', ix)
 	if self.turnIsDriving then
 		self:debug('onWaypointPassed %d, ignored as turn is driving now', ix)
-		return
-	end
-	if self.state == self.states.ON_FIELDWORK_COURSE then
+	elseif self.isTurning then
+		self:debug('onWaypointPassed %d, passing turn waypoint', ix)
+		self:onTurnWaypointPassed(ix)
+	elseif self.state == self.states.ON_FIELDWORK_COURSE then
 		if self.fieldworkState == self.states.WORKING then
 			-- check for transition to connecting track
 			if self.course:isOnConnectingTrack(ix) then
@@ -395,8 +396,9 @@ function FieldworkAIDriver:onWaypointChange(ix)
 				self:debug('temporary (alignment) course is about to end, start work')
 				self:startWork()
 			end
-		-- towards the end of the field course make sure the implement reaches the last waypoint
-		elseif ix > self.course:getNumberOfWaypoints() - 3 then
+		elseif not self.isTurning and ix > self.course:getNumberOfWaypoints() - 3 then
+			-- towards the end of the field course make sure the implement reaches the last waypoint
+			-- except if we are at the end of a turn course.
 			if self.vehicle.cp.aiFrontMarker then
 				self:debug('adding offset (%.1f front marker) to make sure we do not miss anything when the course ends', self.vehicle.cp.aiFrontMarker)
 				self.aiDriverOffsetZ = -self.vehicle.cp.aiFrontMarker
@@ -790,4 +792,29 @@ function FieldworkAIDriver:raiseImplements()
 		implement.object:aiImplementEndLine()
 	end
 	self.vehicle:raiseStateChange(Vehicle.STATE_CHANGE_AI_END_LINE)
+end
+
+-- ####################### TURNS ############################################
+
+function FieldworkAIDriver:onTurnStart(ix)
+	AIDriver.onTurnStart(self, ix)
+--	self.turnStage = self.turnStages.APPROACH
+--	self.turnStartWpIx = ix
+end
+
+function FieldworkAIDriver:onTurnApproachEnd()
+	self:debug('Turn approach ended')
+	self:raiseImplements()
+end
+
+function FieldworkAIDriver:onTurnEnd()
+	self:debug('Ending turn')
+	self:lowerImplements()
+	AIDriver.onTurnEnd(self)
+end
+
+function FieldworkAIDriver:onTurnWaypointPassed(ix)
+	if self.course:getLowerImplementsHere(ix) then
+		self:lowerImplements()
+	end
 end

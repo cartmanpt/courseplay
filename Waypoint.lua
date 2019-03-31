@@ -95,6 +95,8 @@ function Waypoint:set(cpWp, cpIndex)
 	self.unload = cpWp.unload
 	self.mustReach = cpWp.mustReach
 	self.align = cpWp.align
+	self.lowerImplement = cpWp.lowerImplement
+	self.turnEnd = cpWp.turnEnd
 end
 
 --- Get the (original, non-offset) position of a waypoint
@@ -156,6 +158,15 @@ function WaypointNode:setToWaypoint(course, ix, suppressLog)
 	setRotation(self.node, 0, math.rad(course.waypoints[self.ix].angle), 0)
 end
 
+function WaypointNode:setRelativeToWaypoint(course, ix, distance)
+	self:setToWaypoint(course, ix)
+	local nx, ny, nz = localToWorld(self.node, 0, 0, distance)
+	setTranslation(self.node, nx, ny, nz)
+end
+
+function WaypointNode:getPosition()
+	return getWorldTranslation(self.node)
+end
 
 -- Allow ix > #Waypoints, in that case move the node lookAheadDistance beyond the last WP
 function WaypointNode:setToWaypointOrBeyond(course, ix, distance)
@@ -312,9 +323,13 @@ end
 function Course:fixCourseGeneratedByTurnLua()
 	local i = #self.waypoints
 	while i > 1 do
-		if self.waypoints[i - 1].dToNext < 0.25 then
-			table.remove(self.waypoints, i)
-			i = i - 1
+		--print(string.format('%d %.1f %s', i, self:getDistanceBetweenWaypoints(i, i - 1), self.waypoints[i].lowerImplement))
+		if self:getDistanceBetweenWaypoints(i, i - 1) < 0.25 then
+			-- make sure not losing the interesting attributes in case they are on the waypoint we are about to delete
+			self.waypoints[i].turnEnd = self.waypoints[i].turnEnd or self.waypoints[i - 1].turnEnd
+			self.waypoints[i].lowerImplement = self.waypoints[i].lowerImplement or self.waypoints[i - 1].lowerImplement
+			--print(string.format('Removing %d, l-1=%s l=%s', i - 1, self.waypoints[i - 1].lowerImplement, self.waypoints[i].lowerImplement))
+			table.remove(self.waypoints, i - 1)
 		end
 		i = i - 1
 	end
@@ -324,7 +339,7 @@ function Course:fixCourseGeneratedByTurnLua()
 	for i = 2, #self.waypoints - 1 do
 		self.waypoints[i].rev = reverse
 		-- abrupt angle changes must be direction changes
-		if math.abs(self.waypoints[i].angle - self.waypoints[i - 1].angle) > 135 then
+		if math.abs(getDeltaAngle(math.rad(self.waypoints[i].angle), math.rad(self.waypoints[i - 1].angle))) > math.pi * 0.75 then
 			reverse = not reverse
 		end
 	end
@@ -408,6 +423,11 @@ function Course:getDistanceBetweenPointAndWaypoint(px, pz, ix)
 	return self.waypoints[ix]:getDistanceFromPoint(px, pz)
 end
 
+function Course:getDistanceBetweenWaypoints(ix1, ix2)
+	return courseplay:distance(self.waypoints[ix1].x, self.waypoints[ix1].z,
+		self.waypoints[ix2].x, self.waypoints[ix2].z)
+end
+
 function Course:getDistanceBetweenVehicleAndWaypoint(vehicle, ix)
 	return self.waypoints[ix]:getDistanceFromVehicle(vehicle)
 end
@@ -465,7 +485,8 @@ end
 function Course:print()
 	for i = 1, #self.waypoints do
 		local p = self.waypoints[i]
-		print(string.format('%d: x=%4.1f z=%4.1f a=%3.1f r=%s i=%s d=%.1f t=%d', i, p.x, p.z, p.angle, tostring(p.rev), tostring(p.interact), p.dToHere, p.turnsToHere))
+		print(string.format('%d: x=%4.1f z=%4.1f a=%3.1f r=%s i=%s d=%.1f dtoNext=%.1f t=%d, lower=%s, turnEnd=%s',
+			i, p.x, p.z, p.angle, tostring(p.rev), tostring(p.interact), p.dToHere, p.dToNext, p.turnsToHere, tostring(p.lowerImplement), tostring(p.turnEnd)))
 	end
 end
 
@@ -510,6 +531,10 @@ function Course:getDistanceToFirstUpDownRowWaypoint(ix)
 		end
 	end
 	return math.huge, nil
+end
+
+function Course:getOriginalWaypointIx(ix)
+	return self.waypoints[ix].cpIndex
 end
 
 --- Find the waypoint with the original index cpIx in vehicle.Waypoints
@@ -672,4 +697,8 @@ end
 
 function Course:getNextRowLength(ix)
 	return self.waypoints[ix].lNextRow
+end
+
+function Course:getLowerImplementsHere(ix)
+	return self.waypoints[ix].lowerImplement
 end
