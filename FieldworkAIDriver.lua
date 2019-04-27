@@ -29,6 +29,7 @@ FieldworkAIDriver = CpObject(AIDriver)
 FieldworkAIDriver.myStates = {
 	ON_FIELDWORK_COURSE = {},
 	ON_UNLOAD_OR_REFILL_COURSE = {},
+	RETURNING_TO_FIRST_POINT = {},
 	UNLOAD_OR_REFILL_ON_FIELD = {},
 	WAITING_FOR_UNLOAD_OR_REFILL ={}, -- while on the field
 	ON_CONNECTING_TRACK = {},
@@ -54,10 +55,6 @@ function FieldworkAIDriver:init(vehicle)
 	self.heldForUnloadRefillTimestamp = 0
 	-- stop and raise implements while refilling/unloading on field
 	self.stopImplementsWhileUnloadOrRefillOnField = true
-	-- time to lower all implements. This is a default value and will
-	-- be adjusted by the driver as it learns and then used to start lowering implements in time
-	-- so they reach the working position before the row starts.
-	self.loweringDurationMs = 3000
 	-- duration of the last turn maneuver. This is a default value and the driver will measure
 	-- the actual turn times. Used to calculate the remaining fieldwork time
 	self.turnDurationMs = 20000
@@ -139,6 +136,11 @@ end
 function FieldworkAIDriver:start(ix)
 	self:debug('Starting in mode %d', self.mode)
 	self:beforeStart()
+	-- time to lower all implements
+	self:findLoweringDurationMs()
+	-- always enable alignment with first waypoint, this is needed to properly start/continue fieldwork
+	self.alignmentEnabled = self.vehicle.cp.alignment.enabled
+	self.vehicle.cp.alignment.enabled = true
 	-- stop at the last waypoint by default
 	self.vehicle.cp.stopAtEnd = true
 	-- any offset imposed by the driver itself (tight turns, end of course, etc.), addtional to any
@@ -158,7 +160,7 @@ function FieldworkAIDriver:start(ix)
 		self:startCourseWithAlignment(self.unloadRefillCourse, ix - self.fieldworkCourse:getNumberOfWaypoints())
 	else
 		-- we are on the fieldwork part
-		self:startFieldworkWithAlignment(ix)
+		self:startFieldworkWithPathfinding(ix)
 	end
 end
 
@@ -171,9 +173,8 @@ function FieldworkAIDriver:startFieldworkWithAlignment(ix)
 	end
 end
 
-
 function FieldworkAIDriver:startFieldworkWithPathfinding(ix)
-	if self:startCourseWithPathfinding(self.fieldworkCourse, ix, false) then
+	if self:startCourseWithPathfinding(self.fieldworkCourse, ix) then
 		self.state = self.states.ON_FIELDWORK_COURSE
 		self.fieldworkState = self.states.TEMPORARY
 	else
@@ -185,6 +186,8 @@ end
 function FieldworkAIDriver:stop(msgReference)
 	self:stopWork()
 	AIDriver.stop(self, msgReference)
+	-- Restore alignment settings. TODO: remove this setting from the HUD and always enable it
+	self.vehicle.cp.alignment.enabled = self.alignmentEnabled
 end
 
 function FieldworkAIDriver:drive(dt)
@@ -196,6 +199,8 @@ function FieldworkAIDriver:drive(dt)
 			-- someone else is driving, no need to call AIDriver.drive()
 			return
 		end
+	elseif self.state == self.states.RETURNING_TO_FIRST_POINT then
+		self:setSpeed(self:getFieldSpeed())
 	end
 	self:setRidgeMarkers()
 	self:resetUnloadOrRefillHold()
@@ -230,7 +235,6 @@ function FieldworkAIDriver:driveFieldwork()
 			self:debug('all tools ready, start working')
 			self.fieldworkState = self.states.WORKING
 			self:setSpeed(self:getFieldSpeed())
-			self:calculateLoweringDuration()
 		else
 			self:debugSparse('waiting for all tools to lower')
 			self:setSpeed(0)
@@ -261,7 +265,7 @@ function FieldworkAIDriver:stopAndChangeToUnload()
 		self:rememberWaypointToContinueFieldwork()
 		self:debug('at least one tool is empty/full, aborting work at waypoint %d.', self.continueFieldworkAtWaypoint or -1)
 		self:changeToUnloadOrRefill()
-		self:startCourseWithPathfinding(self.unloadRefillCourse, 1, true)
+		self:startCourseWithPathfinding(self.unloadRefillCourse, 1)
 	else
 		self:changeToFieldworkUnloadOrRefill()
 	end
@@ -344,9 +348,25 @@ function FieldworkAIDriver:onEndCourse()
 		-- unload/refill course ended, return to fieldwork
 		self:debug('AI driver in mode %d continue fieldwork at %d/%d waypoints', self:getMode(), self.continueFieldworkAtWaypoint, self.fieldworkCourse:getNumberOfWaypoints())
 		self:startFieldworkWithPathfinding(self.vehicle.cp.continueFieldworkAtWaypoint or self.continueFieldworkAtWaypoint)
+	elseif self.state == self.states.RETURNING_TO_FIRST_POINT then
+		AIDriver.onEndCourse(self)
 	else
 		self:debug('Fieldwork AI driver in mode %d ending course', self:getMode())
-		AIDriver.onEndCourse(self)
+		if self:shouldReturnToFirstPoint() then
+			self:debug('Returning to first point')
+			local x, _, z = self.fieldworkCourse:getWaypointPosition(1)
+			if self:driveToPointWithPathfinding(x, z) then
+				-- pathfinding was successful, drive back to first point
+				self.state = self.states.RETURNING_TO_FIRST_POINT
+				self:raiseImplements()
+				self:foldImplements()
+			else
+				-- no path or too short, stop here.
+				AIDriver.onEndCourse(self)
+			end
+		else
+			AIDriver.onEndCourse(self)
+		end
 	end
 end
 
@@ -388,7 +408,8 @@ function FieldworkAIDriver:onWaypointPassed(ix)
 end
 
 function FieldworkAIDriver:onWaypointChange(ix)
-	self:debug('onWaypointChange %d', ix)
+	self:debug('onWaypointChange %d, connecting: %s, temp: %s',
+		ix, tostring(self.course:isOnConnectingTrack(ix)), tostring(self.states == self.states.TEMPORARY))
 	if self.state == self.states.ON_FIELDWORK_COURSE then
 		self:updateRemainingTime(ix)
 		self:calculateTightTurnOffset()
@@ -415,6 +436,17 @@ function FieldworkAIDriver:onWaypointChange(ix)
 		end
 	end
 	AIDriver.onWaypointChange(self, ix)
+end
+
+--- Should we return to the first point of the course after we are done?
+function FieldworkAIDriver:shouldReturnToFirstPoint()
+	-- TODO: implement and check setting in course or HUD
+	if self.fieldworkCourse:isOnHeadland(self.fieldworkCourse:getNumberOfWaypoints()) then
+		self:debug('Course ends on headland, no return to first point')
+		return false
+	else
+		return true
+	end
 end
 
 function FieldworkAIDriver:getFieldSpeed()
@@ -792,7 +824,6 @@ function FieldworkAIDriver:lowerImplements()
 		implement.object:aiImplementStartLine()
 	end
 	self.vehicle:raiseStateChange(Vehicle.STATE_CHANGE_AI_START_LINE)
-	self:startLoweringDurationTimer()
 end
 
 function FieldworkAIDriver:raiseImplements()
@@ -824,3 +855,46 @@ function FieldworkAIDriver:getCanShowDriveOnButton()
 	return self.state == self.states.ON_FIELDWORK_COURSE 
 end
 
+function FieldworkAIDriver:getLoweringDurationMs()
+	return self.loweringDurationMs
+end
+
+function FieldworkAIDriver:findLoweringDurationMs()
+	local function getLoweringDurationMs(object)
+		if object.spec_animatedVehicle then
+			-- TODO: implement these in the specifications?
+			return math.max(object.spec_animatedVehicle:getAnimationDuration('lowerAnimation'),
+				object.spec_animatedVehicle:getAnimationDuration('rotatePickup'))
+		else
+			return 0
+		end
+	end
+
+	self.loweringDurationMs = getLoweringDurationMs(self.vehicle)
+	self:debug('Lowering duration: %d ms', self.loweringDurationMs)
+
+	-- check all implements first
+	local implements = self.vehicle:getAttachedImplements()
+	for _, implement in ipairs(implements) do
+		local implementLoweringDurationMs = getLoweringDurationMs(implement.object)
+		self:debug('Lowering duration (%s): %d ms', implement.object:getName(), implementLoweringDurationMs)
+		if implementLoweringDurationMs > self.loweringDurationMs then
+			self.loweringDurationMs = implementLoweringDurationMs
+		end
+		local jointDescIndex = implement.jointDescIndex
+		-- now check the attacher joints
+		if self.vehicle.spec_attacherJoints and jointDescIndex then
+			local ajs = self.vehicle.spec_attacherJoints:getAttacherJoints()
+			local ajLoweringDurationMs = ajs[jointDescIndex] and ajs[jointDescIndex].moveDefaultTime or 0
+			self:debug('Lowering duration (%s attacher joint): %d ms', implement.object:getName(), ajLoweringDurationMs)
+			if ajLoweringDurationMs > self.loweringDurationMs then
+				self.loweringDurationMs = ajLoweringDurationMs
+			end
+		end
+	end
+	if not self.loweringDurationMs or self.loweringDurationMs <= 1 then
+		self.loweringDurationMs = 2000
+		self:debug('No lowering duration found, setting to: %d ms', self.loweringDurationMs)
+	end
+	self:debug('Final lowering duration: %d ms', self.loweringDurationMs)
+end
